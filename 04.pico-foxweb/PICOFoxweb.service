@@ -1,0 +1,14 @@
+[Unit]
+Description=PICOFoxweb HTTP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/PICOFoxweb
+Restart=on-failure
+User=sysadmin
+WorkingDirectory=/usr/local/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
