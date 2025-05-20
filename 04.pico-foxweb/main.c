@@ -1,5 +1,6 @@
 #include "httpd.h"
 #include <sys/stat.h>
+#include <syslog.h>
 
 #define CHUNK_SIZE 1024 // read 1024 bytes at a time
 
@@ -10,6 +11,12 @@
 
 int main(int c, char **v) {
   char *port = c == 1 ? "8000" : v[1];
+
+  openlog("PICOFoxweb", LOG_PID | LOG_NDELAY, LOG_DAEMON);
+  syslog(LOG_INFO, 
+	 "Starting PICOFoxweb: listening on port %s, serving directory %s",
+	 port, PUBLIC_DIR);
+
   serve_forever(port);
   return 0;
 }
