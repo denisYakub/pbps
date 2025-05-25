@@ -9,6 +9,8 @@
 #define INDEX_HTML "/index.html"
 #define NOT_FOUND_HTML "/404.html"
 
+extern size_t response_bytes;
+
 int main(int c, char **v) {
   char *port = c == 1 ? "8000" : v[1];
 
@@ -39,8 +41,10 @@ int read_file(const char *file_name) {
   file = fopen(file_name, "r");
 
   if (file) {
-    while ((nread = fread(buf, 1, sizeof buf, file)) > 0)
-      fwrite(buf, 1, nread, stdout);
+    while ((nread = fread(buf, 1, sizeof buf, file)) > 0) {
+  	fwrite(buf, 1, nread, stdout);
+  	response_bytes += nread;
+    }
 
     err = ferror(file);
     fclose(file);
@@ -64,7 +68,7 @@ void route() {
   }
 
   GET("/test") {
-    HTTP_200;
+    HTTP_200;    
     printf("List of request headers:\n\n");
 
     header_t *h = request_headers();

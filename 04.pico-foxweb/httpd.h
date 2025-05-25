@@ -13,6 +13,9 @@ extern char *method, // "GET" or "POST"
 
 extern int payload_size;
 
+extern int response_status;
+extern size_t response_bytes;
+
 // Server control functions
 void serve_forever(const char *PORT);
 
@@ -21,7 +24,7 @@ char *request_header(const char *name);
 typedef struct {
   char *name, *value;
 } header_t;
-static header_t reqhdr[17] = {{"\0", "\0"}};
+extern header_t reqhdr[17];
 header_t *request_headers(void);
 
 // user shall implement this function
@@ -32,22 +35,26 @@ void route();
 #define RESPONSE_PROTOCOL "HTTP/1.1"
 
 #define HTTP_200 \
-  printf("%s 200 OK\r\n" \
+  response_status = 200; \
+  response_bytes += printf("%s 200 OK\r\n" \
          "Content-Type: text/html\r\n" \
          "Connection: close\r\n\r\n", RESPONSE_PROTOCOL)
 
 #define HTTP_201 \
-  printf("%s 201 Created\r\n" \
+  response_status = 201; \
+  response_bytes += printf("%s 201 Created\r\n" \
          "Content-Type: text/html\r\n" \
          "Connection: close\r\n\r\n", RESPONSE_PROTOCOL)
 
 #define HTTP_404 \
-  printf("%s 404 Not Found\r\n" \
+  response_status = 404; \
+  response_bytes += printf("%s 404 Not Found\r\n" \
          "Content-Type: text/html\r\n" \
          "Connection: close\r\n\r\n", RESPONSE_PROTOCOL)
 
 #define HTTP_500 \
-  printf("%s 500 Internal Server Error\r\n" \
+  response_status = 500; \
+  response_bytes += printf("%s 500 Internal Server Error\r\n" \
          "Content-Type: text/html\r\n" \
          "Connection: close\r\n\r\n", RESPONSE_PROTOCOL)
 

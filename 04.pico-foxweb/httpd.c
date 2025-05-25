@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
 
 #define MAX_CONNECTIONS 1000
 #define BUF_SIZE 65535
@@ -30,6 +31,32 @@ char *method, // "GET" or "POST"
     *payload; // for POST
 
 int payload_size;
+
+char client_ip[INET_ADDRSTRLEN];
+char request_time[64];
+int response_status = 0;
+size_t response_bytes = 0;
+
+header_t reqhdr[17] = {{"\0", "\0"}};
+
+void write_log() {
+  FILE *log = fopen("/var/log/foxweb.log", "a");
+  if (!log){
+     perror("fopen log");
+     return;
+  }
+
+  fprintf(log, "%s - - [%s] \"%s %s %s\" %d %d\n",
+          client_ip,
+          request_time,
+          method ? method : "-",
+          uri ? uri : "-",
+          prot ? prot : "-",
+          response_status,
+          response_bytes);
+
+  fclose(log);
+}
 
 void serve_forever(const char *PORT) {
   struct sockaddr_in clientaddr;
@@ -159,7 +186,21 @@ static void uri_unescape(char *uri) {
 
 // client connection
 void respond(int slot) {
+  response_status = 0;
+  response_bytes = 0;
+
   int rcvd;
+
+  struct sockaddr_in addr;
+  socklen_t len = sizeof(addr);
+  getpeername(clients[slot], (struct sockaddr*)&addr, &len);
+  inet_ntop(AF_INET, &addr.sin_addr, client_ip, sizeof(client_ip));
+
+  // Получим текущее время
+  time_t now = time(NULL);
+  struct tm *ptm = localtime(&now);
+  strftime(request_time, sizeof(request_time), "%d/%b/%Y:%H:%M:%S %z", ptm);
+
 
   buf = malloc(BUF_SIZE);
   rcvd = recv(clients[slot], buf, BUF_SIZE, 0);
@@ -226,6 +267,8 @@ void respond(int slot) {
     shutdown(STDOUT_FILENO, SHUT_WR);
     close(STDOUT_FILENO);
   }
+
+  write_log();
 
   free(buf);
 }
