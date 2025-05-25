@@ -8,7 +8,7 @@ clean:
 	@rm -rf PICOFoxweb
 
 PICOFoxweb: main.o httpd.o
-	gcc -o PICOFoxweb $^
+	gcc -o PICOFoxweb $^ -lpthread  # Добавлен -lpthread
 
 main.o: main.c httpd.h
 	gcc -c -o main.o main.c

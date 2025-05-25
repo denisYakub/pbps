@@ -11,10 +11,13 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 #define MAX_CONNECTIONS 1000
 #define BUF_SIZE 65535
 #define QUEUE_SIZE 1000000
+
+pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int listenfd;
 int *clients;
@@ -40,69 +43,62 @@ size_t response_bytes = 0;
 header_t reqhdr[17] = {{"\0", "\0"}};
 
 void write_log() {
-  FILE *log = fopen("/var/log/foxweb.log", "a");
-  if (!log){
-     perror("fopen log");
-     return;
-  }
+    FILE *log = fopen("/var/log/foxweb.log", "a");
+    if (!log){
+        perror("fopen log");
+        return;
+    }
 
-  fprintf(log, "%s - - [%s] \"%s %s %s\" %d %d\n",
-          client_ip,
-          request_time,
-          method ? method : "-",
-          uri ? uri : "-",
-          prot ? prot : "-",
-          response_status,
-          response_bytes);
+    fprintf(log, "%s - - [%s] \"%s %s %s\" %d %zu\n",
+        client_ip,
+        request_time,
+        method ? method : "-",
+        uri ? uri : "-",
+        prot ? prot : "-",
+        response_status,
+        response_bytes);
 
-  fclose(log);
+    fclose(log);
+}
+
+void *respond_thread(void *arg) {
+    int clientfd = *(int *)arg;
+    free(arg); // Мы выделим под него память
+
+    respond(clientfd);
+
+    close(clientfd);
+    pthread_exit(NULL);
 }
 
 void serve_forever(const char *PORT) {
-  struct sockaddr_in clientaddr;
-  socklen_t addrlen;
+    struct sockaddr_in clientaddr;
+    socklen_t addrlen;
 
-  int slot = 0;
+    printf("Server started %shttp://127.0.0.1:%s%s\n", "\033[92m", PORT, "\033[0m");
 
-  printf("Server started %shttp://127.0.0.1:%s%s\n", "\033[92m", PORT,
-         "\033[0m");
+    start_server(PORT);
 
-  // create shared memory for client slot array
-  clients = mmap(NULL, sizeof(*clients) * MAX_CONNECTIONS,
-                 PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+    while (1) {
+        addrlen = sizeof(clientaddr);
+        int *clientfd = malloc(sizeof(int));
+        *clientfd = accept(listenfd, (struct sockaddr *)&clientaddr, &addrlen);
 
-  // Setting all elements to -1: signifies there is no client connected
-  int i;
-  for (i = 0; i < MAX_CONNECTIONS; i++)
-    clients[i] = -1;
-  start_server(PORT);
+        if (*clientfd < 0) {
+            perror("accept() error");
+            free(clientfd);
+            continue;
+        }
 
-  // Ignore SIGCHLD to avoid zombie threads
-  signal(SIGCHLD, SIG_IGN);
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, respond_thread, clientfd) != 0) {
+            perror("pthread_create error");
+            close(*clientfd);
+            free(clientfd);
+        }
 
-  // ACCEPT connections
-  while (1) {
-    addrlen = sizeof(clientaddr);
-    clients[slot] = accept(listenfd, (struct sockaddr *)&clientaddr, &addrlen);
-
-    if (clients[slot] < 0) {
-      perror("accept() error");
-      exit(1);
-    } else {
-      if (fork() == 0) {
-        close(listenfd);
-        respond(slot);
-        close(clients[slot]);
-        clients[slot] = -1;
-        exit(0);
-      } else {
-        close(clients[slot]);
-      }
+        pthread_detach(tid); // не нужно ждать join
     }
-
-    while (clients[slot] != -1)
-      slot = (slot + 1) % MAX_CONNECTIONS;
-  }
 }
 
 // start server
@@ -185,32 +181,27 @@ static void uri_unescape(char *uri) {
 }
 
 // client connection
-void respond(int slot) {
-  response_status = 0;
-  response_bytes = 0;
+void respond(int clientfd) {
+    response_status = 0;
+    response_bytes = 0;
 
-  int rcvd;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    getpeername(clientfd, (struct sockaddr*)&addr, &len);
+    inet_ntop(AF_INET, &addr.sin_addr, client_ip, sizeof(client_ip));
 
-  struct sockaddr_in addr;
-  socklen_t len = sizeof(addr);
-  getpeername(clients[slot], (struct sockaddr*)&addr, &len);
-  inet_ntop(AF_INET, &addr.sin_addr, client_ip, sizeof(client_ip));
+    time_t now = time(NULL);
+    struct tm *ptm = localtime(&now);
+    strftime(request_time, sizeof(request_time), "%d/%b/%Y:%H:%M:%S %z", ptm);
 
-  // Получим текущее время
-  time_t now = time(NULL);
-  struct tm *ptm = localtime(&now);
-  strftime(request_time, sizeof(request_time), "%d/%b/%Y:%H:%M:%S %z", ptm);
+    buf = malloc(BUF_SIZE);
+    int rcvd = recv(clientfd, buf, BUF_SIZE, 0);
 
+    if (rcvd <= 0) {
+        free(buf);
+        return;
+    }
 
-  buf = malloc(BUF_SIZE);
-  rcvd = recv(clients[slot], buf, BUF_SIZE, 0);
-
-  if (rcvd < 0) // receive error
-    fprintf(stderr, ("recv() error\n"));
-  else if (rcvd == 0) // receive socket closed
-    fprintf(stderr, "Client disconnected upexpectedly.\n");
-  else // message received
-  {
     buf[rcvd] = '\0';
 
     method = strtok(buf, " \t\r\n");
@@ -219,56 +210,55 @@ void respond(int slot) {
 
     uri_unescape(uri);
 
-    fprintf(stderr, "\x1b[32m + [%s] %s\x1b[0m\n", method, uri);
-
     qs = strchr(uri, '?');
-
     if (qs)
-      *qs++ = '\0'; // split URI
+        *qs++ = '\0';
     else
-      qs = uri - 1; // use an empty string
+        qs = uri - 1;
 
     header_t *h = reqhdr;
     char *t, *t2;
     while (h < reqhdr + 16) {
-      char *key, *val;
+        char *key = strtok(NULL, "\r\n: \t");
+        if (!key) break;
 
-      key = strtok(NULL, "\r\n: \t");
-      if (!key)
-        break;
+        char *val = strtok(NULL, "\r\n");
+        while (*val == ' ') val++;
 
-      val = strtok(NULL, "\r\n");
-      while (*val && *val == ' ')
-        val++;
-
-      h->name = key;
-      h->value = val;
-      h++;
-      fprintf(stderr, "[H] %s: %s\n", key, val);
-      t = val + 1 + strlen(val);
-      if (t[1] == '\r' && t[2] == '\n')
-        break;
+        h->name = key;
+        h->value = val;
+        h++;
+        t = val + 1 + strlen(val);
+        if (t[1] == '\r' && t[2] == '\n') break;
     }
+
     t = strtok(NULL, "\r\n");
-    t2 = request_header("Content-Length"); // and the related header if there is
+    t2 = request_header("Content-Length");
     payload = t;
     payload_size = t2 ? atol(t2) : (rcvd - (t - buf));
 
-    // bind clientfd to stdout, making it easier to write
-    int clientfd = clients[slot];
-    dup2(clientfd, STDOUT_FILENO);
-    close(clientfd);
+    // временно перенаправим stdout
+    FILE *client_fp = fdopen(dup(clientfd), "w");
+    if (!client_fp) {
+        perror("fdopen");
+        free(buf);
+        return;
+    }
 
-    // call router
+    // временно подменим stdout (только для локального потока)
+    FILE *old_stdout = stdout;
+    stdout = client_fp;
+
     route();
 
-    // tidy up
     fflush(stdout);
-    shutdown(STDOUT_FILENO, SHUT_WR);
-    close(STDOUT_FILENO);
-  }
+    fclose(client_fp);
 
-  write_log();
+    stdout = old_stdout;
 
-  free(buf);
+    pthread_mutex_lock(&log_mutex);
+    write_log();
+    pthread_mutex_unlock(&log_mutex);
+
+    free(buf);
 }
